@@ -23,13 +23,19 @@ jobs:
       - name: Unzip Android project
         run: |
           ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          rm -rf project
           mkdir -p project
           unzip -q "$ZIP_FILE" -d project
 
       - name: Find project directory
         run: |
           SETTINGS=$(find project -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit)
-          test -n "$SETTINGS"
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle not found"
+            find project -maxdepth 5 -type f | head -100
+            exit 1
+          fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
@@ -45,7 +51,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-35"
@@ -62,73 +68,110 @@ jobs:
 
           touch gradle.properties
 
-          grep -qxF "android.useAndroidX=true" gradle.properties || \
+          if ! grep -q "^android.useAndroidX=" gradle.properties; then
             echo "android.useAndroidX=true" >> gradle.properties
+          else
+            sed -i 's/^android.useAndroidX=.*/android.useAndroidX=true/' gradle.properties
+          fi
 
-          grep -qxF "android.enableJetifier=true" gradle.properties || \
+          if ! grep -q "^android.enableJetifier=" gradle.properties; then
             echo "android.enableJetifier=true" >> gradle.properties
+          else
+            sed -i 's/^android.enableJetifier=.*/android.enableJetifier=true/' gradle.properties
+          fi
 
           echo "===== gradle.properties ====="
           cat gradle.properties
 
-      - name: Fix Java and Kotlin JVM target
+      - name: Force Java 17 and Kotlin 17
         run: |
           cd "$PROJECT_DIR"
 
-          echo "===== Android project files ====="
-
-          find . -type f \( \
-            -name "build.gradle.kts" -o \
-            -name "build.gradle" \
-          \) -print
-
-          echo "===== Fix Java 1.8 -> Java 17 ====="
-
-          find . -type f -name "build.gradle.kts" -print0 | while IFS= read -r -d '' FILE
-          do
-            echo "Processing: $FILE"
-
-            sed -i \
-              's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' \
-              "$FILE"
-
-            sed -i \
-              's/JavaVersion\.VERSION_8/JavaVersion.VERSION_17/g' \
-              "$FILE"
-
-            sed -i \
-              's/jvmTarget[[:space:]]*=[[:space:]]*"1\.8"/jvmTarget = "17"/g' \
-              "$FILE"
-
-            sed -i \
-              's/jvmTarget[[:space:]]*=[[:space:]]*"8"/jvmTarget = "17"/g' \
-              "$FILE"
-          done
-
-          echo "===== Current app build.gradle.kts ====="
-
           APP_GRADLE=$(find . -type f -path "*/app/build.gradle.kts" -print -quit)
 
-          if [ -n "$APP_GRADLE" ]; then
-            echo "APP_GRADLE=$APP_GRADLE"
-            cat "$APP_GRADLE"
-          else
-            echo "ERROR: app/build.gradle.kts not found"
+          if [ -z "$APP_GRADLE" ]; then
+            APP_GRADLE=$(find . -type f -path "*/app/build.gradle" -print -quit)
+          fi
+
+          if [ -z "$APP_GRADLE" ]; then
+            echo "ERROR: app build.gradle not found"
+            find . -type f \( -name "build.gradle.kts" -o -name "build.gradle" \) -print
             exit 1
           fi
+
+          echo "Using: $APP_GRADLE"
+
+          cp "$APP_GRADLE" "$APP_GRADLE.backup"
+
+          echo "===== Original build file ====="
+          cat "$APP_GRADLE"
+
+          echo "===== Replacing old Java 8 settings ====="
+
+          sed -i \
+            -e 's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' \
+            -e 's/JavaVersion\.VERSION_8/JavaVersion.VERSION_17/g' \
+            -e 's/JavaVersion\.VERSION_1_7/JavaVersion.VERSION_17/g' \
+            -e 's/jvmTarget[[:space:]]*=[[:space:]]*"1\.8"/jvmTarget = "17"/g' \
+            -e 's/jvmTarget[[:space:]]*=[[:space:]]*"8"/jvmTarget = "17"/g' \
+            "$APP_GRADLE"
+
+          echo "===== Adding forced Java 17 configuration ====="
+
+          cat >> "$APP_GRADLE" <<'EOF'
+
+          // ===== GitHub Actions: Force Java/Kotlin JVM 17 =====
+          android {
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+
+          kotlin {
+              jvmToolchain(17)
+          }
+          // ===== End Java/Kotlin 17 configuration =====
+          EOF
+
+          echo "===== Final build file ====="
+          cat "$APP_GRADLE"
+
+      - name: Verify Java and Kotlin settings
+        run: |
+          cd "$PROJECT_DIR"
+
+          echo "===== Checking Java ====="
+          java -version
+
+          echo "===== Checking Gradle ====="
+          gradle --version
+
+          echo "===== Checking project configuration ====="
+          grep -R "VERSION_1_8\|VERSION_8\|jvmTarget.*1.8\|jvmTarget.*8" . \
+            --include="*.gradle" \
+            --include="*.gradle.kts" \
+            || true
 
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
 
-          echo "===== Building Debug APK ====="
+          echo "===== BUILD START ====="
 
-          gradle assembleDebug --no-daemon
+          gradle \
+            :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Find APK
         run: |
-          echo "===== APK files ====="
-          find "$PROJECT_DIR" -type f -name "*.apk" -print
+          echo "===== APK FILES ====="
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
