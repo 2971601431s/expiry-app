@@ -26,9 +26,11 @@ jobs:
           mkdir -p project
           unzip -q "$ZIP_FILE" -d project
 
-      - name: Find project directory
+      - name: Find Gradle project
         run: |
-          find project -name gradlew -type f
+          SETTINGS=$(find project -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit)
+          echo "SETTINGS=$SETTINGS"
+          test -n "$SETTINGS"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -39,12 +41,18 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
       - name: Build APK
         run: |
-          chmod +x $(find project -name gradlew -type f | head -n 1)
-          GRADLEW=$(find project -name gradlew -type f | head -n 1)
-          cd "$(dirname "$GRADLEW")"
-          ./gradlew assembleDebug
+          SETTINGS=$(find project -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit)
+          PROJECT_DIR=$(dirname "$SETTINGS")
+          echo "PROJECT_DIR=$PROJECT_DIR"
+          cd "$PROJECT_DIR"
+          gradle assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
