@@ -30,7 +30,9 @@ jobs:
         run: |
           SETTINGS=$(find project -type f \( -name "settings.gradle.kts" -o -name "settings.gradle" \) -print -quit)
           test -n "$SETTINGS"
+
           PROJECT_DIR=$(dirname "$SETTINGS")
+
           echo "PROJECT_DIR=$PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
@@ -57,6 +59,7 @@ jobs:
       - name: Configure AndroidX
         run: |
           cd "$PROJECT_DIR"
+
           touch gradle.properties
 
           grep -qxF "android.useAndroidX=true" gradle.properties || \
@@ -68,13 +71,68 @@ jobs:
           echo "===== gradle.properties ====="
           cat gradle.properties
 
+      - name: Fix Java and Kotlin JVM target
+        run: |
+          cd "$PROJECT_DIR"
+
+          echo "===== Android project files ====="
+
+          find . -type f \( \
+            -name "build.gradle.kts" -o \
+            -name "build.gradle" \
+          \) -print
+
+          echo "===== Fix Java 1.8 -> Java 17 ====="
+
+          find . -type f -name "build.gradle.kts" -print0 | while IFS= read -r -d '' FILE
+          do
+            echo "Processing: $FILE"
+
+            sed -i \
+              's/JavaVersion\.VERSION_1_8/JavaVersion.VERSION_17/g' \
+              "$FILE"
+
+            sed -i \
+              's/JavaVersion\.VERSION_8/JavaVersion.VERSION_17/g' \
+              "$FILE"
+
+            sed -i \
+              's/jvmTarget[[:space:]]*=[[:space:]]*"1\.8"/jvmTarget = "17"/g' \
+              "$FILE"
+
+            sed -i \
+              's/jvmTarget[[:space:]]*=[[:space:]]*"8"/jvmTarget = "17"/g' \
+              "$FILE"
+          done
+
+          echo "===== Current app build.gradle.kts ====="
+
+          APP_GRADLE=$(find . -type f -path "*/app/build.gradle.kts" -print -quit)
+
+          if [ -n "$APP_GRADLE" ]; then
+            echo "APP_GRADLE=$APP_GRADLE"
+            cat "$APP_GRADLE"
+          else
+            echo "ERROR: app/build.gradle.kts not found"
+            exit 1
+          fi
+
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
+
+          echo "===== Building Debug APK ====="
+
           gradle assembleDebug --no-daemon
+
+      - name: Find APK
+        run: |
+          echo "===== APK files ====="
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: expiry-app-debug-apk
           path: "**/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
